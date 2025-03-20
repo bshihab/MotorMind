@@ -28,6 +28,7 @@ from ml.data.preprocessing.features import extract_all_features, features_to_tex
 from ml.data.preprocessing.eeg_preprocessing import preprocess_eeg, normalize_eeg, bandpass_filter
 from ml.models.llm_wrapper import LLMWrapper, SupabaseLLMIntegration
 from backend.database.supabase import SupabaseClient, create_database_schema
+from ml.data.preprocessing.npz_converter import convert_npz_format
 
 
 def load_eeg_data(file_path, format='numpy'):
@@ -42,9 +43,32 @@ def load_eeg_data(file_path, format='numpy'):
         EEG data as numpy array, sampling rate, and channel names
     """
     if format == 'numpy':
-        # Assuming .npz file with 'data', 'fs', and 'channels' keys
-        data = np.load(file_path)
-        return data['data'], data['fs'], data['channels']
+        # Attempting to load the NPZ file
+        try:
+            data = np.load(file_path)
+            
+            # Check if the required keys are present
+            if 'data' not in data:
+                print("NPZ file doesn't have the expected 'data' key. Attempting conversion...")
+                
+                # Create a converted file path
+                file_dir = os.path.dirname(file_path)
+                file_name = os.path.basename(file_path)
+                converted_file_path = os.path.join(file_dir, f"converted_{file_name}")
+                
+                # Convert the file to the expected format
+                success = convert_npz_format(file_path, converted_file_path)
+                
+                if success:
+                    print(f"Successfully converted the file. Loading from: {converted_file_path}")
+                    data = np.load(converted_file_path)
+                else:
+                    raise ValueError("Failed to convert the NPZ file to the expected format.")
+            
+            return data['data'], data['fs'], data['channels']
+        except Exception as e:
+            print(f"Error loading NPZ file: {str(e)}")
+            raise
     
     elif format in ['edf', 'gdf']:
         try:

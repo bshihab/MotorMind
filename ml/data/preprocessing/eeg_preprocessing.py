@@ -13,6 +13,7 @@ import numpy as np
 import scipy.signal as signal
 from typing import List, Tuple, Dict, Optional, Union
 import pandas as pd
+import sys
 
 
 def load_eeg_numpy(file_path: str) -> np.ndarray:
@@ -309,4 +310,29 @@ def process_BCI_IV_dataset(
     # You may need to adjust this based on the actual labels in your dataset
     labels = [0] * len(segments)  # Placeholder, replace with actual labels if available
     
-    return segments, labels 
+    return segments, labels
+
+
+def convert_npz_format(input_file: str, output_file: str):
+    """
+    Convert a processed npz file to the expected format.
+    
+    Args:
+        input_file: Path to the input npz file
+        output_file: Path to the output npz file
+    """
+    # Load the file
+    data = np.load(input_file, allow_pickle=True)
+    
+    # Print the keys to see what's available
+    print("Keys in the file:", list(data.keys()))
+    
+    # Create a new file with the expected keys
+    np.savez(
+        output_file,
+        data=data['preprocessed_data'] if 'preprocessed_data' in data else data['raw_data'],
+        fs=data['fs'] if 'fs' in data else 250,  # Default to 250 Hz if not present
+        channels=data['channels'] if 'channels' in data else [f"Ch{i+1}" for i in range(data['preprocessed_data'].shape[0])]
+    )
+    
+    print(f"Converted file saved to {output_file}") 
