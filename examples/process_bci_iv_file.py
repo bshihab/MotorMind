@@ -6,7 +6,7 @@ This script provides a way to process the BCI_IV_2a_EEGclip.npy file format
 and prepare it for use with the MotorMind system.
 
 Example usage:
-    python process_bci_iv_file.py --input "BCI_IV_2a_EEGclip (2).npy" --output processed_eeg_data.npz
+    python process_bci_iv_file.py --input "BCI_IV_2a_EEGclip (2).npy" --output processed_eeg_data.npy
 """
 
 import os
@@ -27,6 +27,9 @@ from ml.data.preprocessing.eeg_preprocessing import (
 )
 from ml.data.preprocessing.features import extract_all_features, features_to_text
 
+# Global variables to store metadata (since we can't store in .npy)
+SAMPLING_RATE = 250
+CHANNEL_NAMES = []
 
 def load_bci_iv_data(file_path):
     """
@@ -48,6 +51,11 @@ def load_bci_iv_data(file_path):
         
         # Create default channel names if not available
         channels = [f"Ch{i+1}" for i in range(data.shape[0])]
+        
+        # Store in global variables
+        global SAMPLING_RATE, CHANNEL_NAMES
+        SAMPLING_RATE = fs
+        CHANNEL_NAMES = channels
         
         return data, fs, channels
     except Exception as e:
@@ -97,7 +105,7 @@ def process_and_save(input_file, output_file, visualize=False):
     
     Args:
         input_file: Path to input .npy file
-        output_file: Path to output .npz file
+        output_file: Path to output .npy file (preprocessed data)
         visualize: Whether to visualize the data
     """
     # Load data
@@ -119,57 +127,54 @@ def process_and_save(input_file, output_file, visualize=False):
     if visualize:
         visualize_eeg(normalized_data, fs, channels, title="Preprocessed EEG Data")
     
-    # Segment data
+    # Extract features for display but don't save them
     window_size = 1.0  # 1 second
     window_shift = 0.25  # 250 ms
     segments = segment_eeg(normalized_data, fs, window_size, window_shift)
     
     print(f"Created {len(segments)} segments")
-    print(f"Segment shape: {segments[0].shape}")
+    if segments:
+        print(f"Segment shape: {segments[0].shape}")
     
-    # Extract features
-    features = []
-    for segment in segments:
+        # Extract sample features for display
         segment_features = extract_all_features(
-            eeg_data=segment, 
+            eeg_data=segments[0], 
             fs=fs, 
             channel_names=channels,
-            window_size=segment.shape[1],
+            window_size=segments[0].shape[1],
             overlap=0  # No additional segmentation
         )
-        # Since extract_all_features returns a list, we take the first item
-        features.append(segment_features[0])
+        
+        # Convert features to text representation for first example
+        feature_text = features_to_text(
+            segment_features[0], 
+            task_context="BCI IV 2a motor imagery dataset analysis"
+        )
+        
+        print("Example feature text:")
+        print(feature_text[:500] + "...\n")
     
-    print(f"Extracted features for {len(features)} segments")
+    # Save only the preprocessed data as a simple .npy file
+    np.save(output_file, normalized_data)
     
-    # Convert features to text representation for first example
-    feature_text = features_to_text(
-        features[0], 
-        task_context="BCI IV 2a motor imagery dataset analysis"
-    )
-    
-    print("Example feature text:")
-    print(feature_text[:500] + "...\n")
-    
-    # Save preprocessed data
-    np.savez(
-        output_file,
-        raw_data=eeg_data,
-        preprocessed_data=normalized_data,
-        segments=np.array(segments),
-        features=features,
-        fs=fs,
-        channels=channels
-    )
+    # Save metadata to a separate file for reference
+    metadata_file = os.path.splitext(output_file)[0] + "_metadata.txt"
+    with open(metadata_file, 'w') as f:
+        f.write(f"Sampling rate: {fs} Hz\n")
+        f.write(f"Channels: {channels}\n")
+        f.write(f"Data shape: {normalized_data.shape}\n")
     
     print(f"Preprocessed data saved to {output_file}")
+    print(f"Metadata saved to {metadata_file}")
+    print(f"\nIMPORTANT: When using this file with eeg_llm_demo.py, use these parameters:")
+    print(f"  --eeg-format simple_numpy --sampling-rate {fs} --channels {len(channels)}")
 
 
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description="BCI IV 2a Dataset Processing Utility")
     parser.add_argument("--input", required=True, help="Path to BCI_IV_2a_EEGclip.npy file")
-    parser.add_argument("--output", default="processed_eeg_data.npz", help="Path to output file")
+    parser.add_argument("--output", default="processed_eeg_data.npy", help="Path to output file")
     parser.add_argument("--visualize", action="store_true", help="Visualize the data (requires matplotlib)")
     
     args = parser.parse_args()

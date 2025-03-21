@@ -1,0 +1,68 @@
+# MotorMind .gitignore file
+
+# API Keys and sensitive information
+gemini_api_key.txt
+.env
+secrets.json
+
+# Specific files to ignore
+2401.18006v2.pdf
+
+# Common Python ignores
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Project data (potentially large files)
+data/raw/
+data/processed/
+*.npy
+*.npz
+*.pth
+*.pth.tar
+*.h5
+*.pkl
+*.model
+
+# IDE/Editor specific
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store 

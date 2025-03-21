@@ -12,6 +12,7 @@ with EEG data analysis. It includes tools for:
 import json
 import os
 import time
+import re
 from typing import Dict, List, Tuple, Optional, Union, Any
 
 import numpy as np
@@ -198,6 +199,21 @@ class LLMWrapper:
         Returns:
             LLM response as a dictionary
         """
+        # Validate API key
+        if not self.api_key:
+            return {
+                "text": "Error: No API key provided. Set a valid API key using --llm-api-key flag or LLM_API_KEY environment variable.",
+                "success": False,
+                "error_type": "missing_api_key"
+            }
+            
+        if self.api_key == "YOUR_ACTUAL_API_KEY" or self.api_key.lower().startswith("your_"):
+            return {
+                "text": "Error: Placeholder API key detected. Please replace 'YOUR_ACTUAL_API_KEY' with your real OpenAI API key.",
+                "success": False,
+                "error_type": "placeholder_api_key"
+            }
+            
         # Example implementation for OpenAI-compatible API
         headers = {
             "Content-Type": "application/json",
@@ -228,11 +244,38 @@ class LLMWrapper:
                 "success": True
             }
             
-        except Exception as e:
-            print(f"Error calling LLM API: {e}")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                error_msg = "Error: Invalid or expired API key. Please check your OpenAI API key."
+                error_type = "invalid_api_key"
+            elif e.response.status_code == 429:
+                error_msg = "Error: Rate limit exceeded or insufficient quota. Check your OpenAI account."
+                error_type = "rate_limit"
+            else:
+                error_msg = f"HTTP Error: {e}"
+                error_type = "http_error"
+            
+            print(f"Error calling LLM API: {error_msg}")
             return {
-                "text": f"Error: {str(e)}",
-                "success": False
+                "text": error_msg,
+                "success": False,
+                "error_type": error_type
+            }
+        except requests.exceptions.ConnectionError:
+            error_msg = "Error: Failed to connect to the API. Check your internet connection."
+            print(f"Error calling LLM API: {error_msg}")
+            return {
+                "text": error_msg,
+                "success": False,
+                "error_type": "connection_error"
+            }
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            print(f"Error calling LLM API: {error_msg}")
+            return {
+                "text": error_msg,
+                "success": False,
+                "error_type": "unknown_error"
             }
     
     def analyze_eeg(
@@ -262,16 +305,37 @@ class LLMWrapper:
         response = self.call_llm(prompt)
         
         if not response["success"]:
+            error_type = response.get("error_type", "unknown")
+            error_message = response["text"]
+            
+            # Provide helpful instructions based on error type
+            help_message = ""
+            if error_type == "missing_api_key":
+                help_message = "Please provide an API key using --llm-api-key or set the LLM_API_KEY environment variable."
+            elif error_type == "placeholder_api_key":
+                help_message = "Replace 'YOUR_ACTUAL_API_KEY' with your real OpenAI API key."
+            elif error_type == "invalid_api_key":
+                help_message = "Check that your API key is correct and has not expired."
+            elif error_type == "rate_limit":
+                help_message = "Wait and try again later or check your OpenAI account quota."
+                
+            if help_message:
+                print(f"\nHelp: {help_message}")
+                
             return {
                 "classification": None,
                 "confidence": None,
                 "reasoning": None,
-                "error": response["text"],
+                "error": error_message,
+                "error_type": error_type,
                 "success": False
             }
         
         # Parse response
-        return self.parse_llm_response(response["text"], task)
+        result = self.parse_llm_response(response["text"], task)
+        result["success"] = True
+        
+        return result
     
     def parse_llm_response(
         self,
@@ -297,69 +361,77 @@ class LLMWrapper:
         }
         
         # Extract classification and confidence
-        # This is a simple heuristic-based approach - could be improved with regex or more sophisticated parsing
         if task == "motor_imagery_classification":
-            classes = ["right hand", "left hand", "feet", "rest"]
-            for line in response_text.lower().split("\n"):
-                # Look for classification statements
-                if "classification:" in line or "conclusion:" in line or "final classification:" in line:
-                    for cls in classes:
-                        if cls in line:
-                            result["classification"] = cls
-                            break
-                
-                # Look for confidence statements
-                if "confidence:" in line:
+            # Check for the specific format in the Gemini output
+            if "most likely classification is **right hand motor imagery**" in response_text:
+                result["classification"] = "right hand"
+            elif "most likely classification is **left hand motor imagery**" in response_text:
+                result["classification"] = "left hand"
+            elif "most likely classification is **feet motor imagery**" in response_text:
+                result["classification"] = "feet"
+            elif "most likely classification is **rest**" in response_text:
+                result["classification"] = "rest"
+            
+            # If no exact match, try more general patterns
+            if not result["classification"]:
+                if "right hand" in response_text.lower():
+                    result["classification"] = "right hand"
+                elif "left hand" in response_text.lower():
+                    result["classification"] = "left hand"
+                elif "feet" in response_text.lower():
+                    result["classification"] = "feet"
+                elif "rest" in response_text.lower():
+                    result["classification"] = "rest"
+            
+            # Look for confidence in various formats
+            confidence_patterns = [
+                r"\*\*confidence score:\*\*\s*(\d+)%",
+                r"confidence score:?\s*low\s*\((\d+)%\)",
+                r"confidence score:?\s*moderate\s*\((\d+)%\)",
+                r"confidence score:?\s*high\s*\((\d+)%\)",
+                r"confidence score:?\s*(\d+)%",
+                r"confidence:?\s*(\d+)%",
+                r"confidence:?\s*low\s*\((\d+)%\)",
+                r"confidence:?\s*moderate\s*\((\d+)%\)",
+                r"confidence:?\s*high\s*\((\d+)%\)",
+                r"confidence:?\s*(\d+)\s*percent",
+                r"confidence:?\s*(\d+)\.(\d+)",
+                r"confidence score:?\s*(\d+)[\s\n]"
+            ]
+            
+            for pattern in confidence_patterns:
+                match = re.search(pattern, response_text.lower())
+                if match:
                     try:
-                        # Extract confidence value (e.g., "confidence: 85%" -> 0.85)
-                        conf_text = line.split("confidence:")[1].strip()
-                        conf_value = ''.join(filter(lambda x: x.isdigit() or x == '.', conf_text))
-                        confidence = float(conf_value)
-                        # Normalize to 0-1 range if needed
+                        if len(match.groups()) == 1:
+                            confidence = float(match.group(1))
+                        else:
+                            confidence = float(f"{match.group(1)}.{match.group(2)}")
+                            
                         if confidence > 1 and confidence <= 100:
                             confidence /= 100
                         result["confidence"] = confidence
+                        break
                     except (ValueError, IndexError):
                         pass
         
         elif task == "abnormality_detection":
-            for line in response_text.lower().split("\n"):
-                if "normal" in line or "abnormal" in line:
-                    if "abnormal" in line:
-                        result["classification"] = "abnormal"
-                    else:
-                        result["classification"] = "normal"
-                
-                # Look for confidence statements (same as above)
-                if "confidence:" in line:
-                    try:
-                        conf_text = line.split("confidence:")[1].strip()
-                        conf_value = ''.join(filter(lambda x: x.isdigit() or x == '.', conf_text))
-                        confidence = float(conf_value)
-                        if confidence > 1 and confidence <= 100:
-                            confidence /= 100
-                        result["confidence"] = confidence
-                    except (ValueError, IndexError):
-                        pass
-        
-        # Extract reasoning steps
-        reasoning_lines = []
-        in_reasoning = False
-        
-        for line in response_text.split("\n"):
-            # Check for reasoning section markers
-            if "reasoning:" in line.lower() or "analysis:" in line.lower() or "step " in line.lower():
-                in_reasoning = True
-                reasoning_lines.append(line)
-            elif in_reasoning and line.strip():
-                reasoning_lines.append(line)
-            # End of reasoning section
-            elif in_reasoning and "classification:" in line.lower() or "conclusion:" in line.lower():
-                in_reasoning = False
-        
-        # If we found reasoning steps, update the reasoning field
-        if reasoning_lines:
-            result["reasoning"] = "\n".join(reasoning_lines)
+            # Similar pattern matching for abnormality detection
+            if "abnormal" in response_text.lower():
+                result["classification"] = "abnormal"
+            elif "normal" in response_text.lower():
+                result["classification"] = "normal"
+            
+            # Look for confidence statements
+            confidence_match = re.search(r"confidence:?\s*\w+\s*\((\d+)%\)", response_text.lower())
+            if confidence_match:
+                try:
+                    confidence = float(confidence_match.group(1))
+                    if confidence > 1 and confidence <= 100:
+                        confidence /= 100
+                    result["confidence"] = confidence
+                except (ValueError, IndexError):
+                    pass
         
         return result
 
