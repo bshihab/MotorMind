@@ -7,6 +7,11 @@ secrets.json
 
 # Specific files to ignore
 2401.18006v2.pdf
+*.pdf   # All research papers
+
+# Jupyter Notebooks
+*.ipynb
+.ipynb_checkpoints/
 
 # Common Python ignores
 __pycache__/
