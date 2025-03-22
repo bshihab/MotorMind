@@ -1,7 +1,7 @@
 """
 EEG-RAG Inference Engine
 
-This module implements the inference engine that combines Large Language Models with
+This module implements the inference engine that combines Google's Gemini with
 Retrieval-Augmented Generation (RAG) to interpret EEG signals.
 """
 
@@ -46,6 +46,17 @@ class EEGPromptGenerator:
                 "Classify the motor imagery as one of: right hand, left hand, feet, or rest. "
                 "Provide your reasoning in a step-by-step manner, and conclude with "
                 "a classification and confidence score."
+            )
+        elif task == "thought_to_text":
+            instructions = (
+                "Analyze the following EEG frequency data to detect the word the subject might be thinking. "
+                "Focus on language-related frequency patterns, particularly: "
+                "1. Theta rhythms (4-8 Hz) which are critical for syllabic processing and verbal working memory, "
+                "2. Alpha/Beta rhythms (8-30 Hz) involved in semantic processing, "
+                "3. Gamma oscillations (30-80 Hz) associated with local word processing. "
+                "\n\nPay special attention to channels over the left temporal and frontal areas (if present). "
+                "Provide your reasoning in a step-by-step manner, and conclude with "
+                "the most likely word or phrase the subject is thinking, with a confidence score."
             )
         elif task == "abnormality_detection":
             instructions = (
@@ -100,6 +111,19 @@ Please analyze step-by-step:
                 "First look at the similar examples below, then analyze the new data. "
                 "Provide your reasoning in a step-by-step manner, and conclude with "
                 "a classification and confidence score."
+            )
+        elif task == "thought_to_text":
+            instructions = (
+                "Analyze the following EEG frequency data to detect the word the subject might be thinking. "
+                "Focus on language-related frequency patterns, particularly: "
+                "1. Theta rhythms (4-8 Hz) which are critical for syllabic processing and verbal working memory, "
+                "2. Alpha/Beta rhythms (8-30 Hz) involved in semantic processing, "
+                "3. Gamma oscillations (30-80 Hz) associated with local word processing. "
+                "\n\nFirst examine the similar examples below, noting their associated words/phrases. "
+                "Then analyze the new data, looking for frequency patterns that resemble known word patterns. "
+                "Pay special attention to channels over the left temporal and frontal areas (if present). "
+                "Provide your reasoning in a step-by-step manner, and conclude with "
+                "the most likely word or phrase the subject is thinking, with a confidence score."
             )
         else:
             instructions = (
@@ -183,6 +207,15 @@ Please analyze step-by-step:
                 "Step 4: Consider alternative explanations for the observed patterns.\n"
                 "Step 5: Make a classification with confidence score."
             ),
+            "thought_to_text": (
+                "Your goal is to determine what word or phrase the subject is thinking based on EEG frequency data.\n\n"
+                "Step 1: Analyze theta band (4-8 Hz) patterns related to syllabic processing and verbal working memory.\n"
+                "Step 2: Examine alpha/beta bands (8-30 Hz) for semantic processing signatures.\n"
+                "Step 3: Assess gamma oscillations (30-80 Hz) for local word processing.\n"
+                "Step 4: Consider patterns across language-related brain regions (left temporal & frontal areas).\n"
+                "Step 5: Identify potential words/phrases that match the observed patterns.\n"
+                "Step 6: Determine the most likely word/phrase with a confidence score."
+            ),
             "abnormality_detection": (
                 "Your goal is to determine if the EEG shows any abnormal patterns.\n\n"
                 "Step 1: Examine background rhythms for abnormalities.\n"
@@ -239,7 +272,7 @@ For each step, explicitly consider 2-3 possible interpretations before proceedin
 
 ## Analysis
 
-Step 1: Analyzing spatial patterns...
+Step 1: Analyzing the patterns...
 Interpretation A: 
 """
         
@@ -248,12 +281,12 @@ Interpretation A:
 
 class EEGRAGEngine:
     """
-    Inference engine that combines LLM with RAG for EEG signal interpretation.
+    Inference engine that combines Gemini with RAG for EEG signal interpretation.
     """
     
     def __init__(
         self,
-        llm_client,
+        gemini_client,
         vector_store: Optional[SupabaseVectorStore] = None,
         tokenizer_type: str = 'feature',
         tokenizer_params: Optional[Dict[str, Any]] = None,
@@ -266,7 +299,7 @@ class EEGRAGEngine:
         Initialize the EEG-RAG inference engine.
         
         Args:
-            llm_client: Client for the Large Language Model
+            gemini_client: Client for the Google Gemini API
             vector_store: Vector store instance for RAG
             tokenizer_type: Type of tokenizer to use ('feature' or 'frequency')
             tokenizer_params: Additional parameters for the tokenizer
@@ -275,7 +308,7 @@ class EEGRAGEngine:
             window_shift: Window shift in seconds
             debug: Whether to print debug information
         """
-        self.llm_client = llm_client
+        self.gemini_client = gemini_client
         self.vector_store = vector_store
         self.tokenizer_type = tokenizer_type
         self.fs = fs
@@ -399,7 +432,7 @@ class EEGRAGEngine:
                     )
             
             # Call LLM for analysis
-            llm_response = self.llm_client.generate(prompt)
+            llm_response = self.gemini_client.generate(prompt)
             
             # Extract interpretation from LLM response
             interpretation = self._parse_llm_response(llm_response, task)
@@ -616,6 +649,68 @@ class EEGRAGEngine:
                 
                 interpretation['reasoning'] = reasoning_text.strip()
             
+            # For thought-to-text task
+            elif task == "thought_to_text":
+                import re
+                
+                # Look for word/phrase and confidence statements
+                text_patterns = [
+                    r"word:?\s*\"?([^\"\.]+)\"?",
+                    r"phrase:?\s*\"?([^\"\.]+)\"?", 
+                    r"thinking\s*(?:of|about)?:?\s*\"?([^\"\.]+)\"?",
+                    r"detected\s*(?:word|phrase|thought):?\s*\"?([^\"\.]+)\"?",
+                    r"most\s*likely\s*(?:word|phrase|thinking|thought):?\s*\"?([^\"\.]+)\"?",
+                    r"subject\s*is\s*thinking\s*(?:of|about)?:?\s*\"?([^\"\.]+)\"?"
+                ]
+                
+                # Same confidence patterns as before
+                confidence_patterns = [
+                    r"confidence:?\s*(\d+(?:\.\d+)?)%?",
+                    r"confidence\s*(?:of|:|\s+)?\s*(\d+(?:\.\d+)?)%?",
+                    r"(\d+(?:\.\d+)?)%?\s*confidence",
+                    r"with\s*(?:a)?\s*confidence\s*(?:of)?\s*(\d+(?:\.\d+)?)%?"
+                ]
+                
+                # Try to find the text
+                for pattern in text_patterns:
+                    match = re.search(pattern, llm_response, re.IGNORECASE)
+                    if match:
+                        detected_text = match.group(1).strip()
+                        # Remove extra quotes if present
+                        detected_text = detected_text.strip('"\'')
+                        interpretation['text'] = detected_text
+                        break
+                
+                # Try to find the confidence
+                for pattern in confidence_patterns:
+                    match = re.search(pattern, llm_response, re.IGNORECASE)
+                    if match:
+                        confidence = float(match.group(1))
+                        # Normalize to 0-1 range if needed
+                        if confidence > 1:
+                            confidence /= 100
+                        interpretation['confidence'] = confidence
+                        break
+                
+                # Set success flag
+                interpretation['success'] = 'text' in interpretation and interpretation['text'] is not None
+                
+                # Extract reasoning
+                conclusion_markers = [
+                    "conclusion:",
+                    "in conclusion",
+                    "therefore",
+                    "final assessment:"
+                ]
+                
+                reasoning_text = llm_response
+                for marker in conclusion_markers:
+                    if marker.lower() in llm_response.lower():
+                        reasoning_text = llm_response.lower().split(marker.lower())[0]
+                        break
+                
+                interpretation['reasoning'] = reasoning_text.strip()
+            
             # For abnormality detection
             elif task == "abnormality_detection":
                 # Look for abnormal/normal statements
@@ -625,10 +720,36 @@ class EEGRAGEngine:
                     r"the\s*eeg\s*is\s*(normal|abnormal)"
                 ]
                 
-                # Reuse confidence patterns from above
-                
                 # Implementation similar to motor imagery classification
-                # ...
+                import re
+                
+                # Try to find the class
+                for pattern in class_patterns:
+                    match = re.search(pattern, llm_response, re.IGNORECASE)
+                    if match:
+                        interpretation['class'] = match.group(1).lower()
+                        break
+                
+                # Try to find the confidence (reuse existing patterns)
+                confidence_patterns = [
+                    r"confidence:?\s*(\d+(?:\.\d+)?)%?",
+                    r"confidence\s*(?:of|:|\s+)?\s*(\d+(?:\.\d+)?)%?",
+                    r"(\d+(?:\.\d+)?)%?\s*confidence",
+                    r"with\s*(?:a)?\s*confidence\s*(?:of)?\s*(\d+(?:\.\d+)?)%?"
+                ]
+                
+                for pattern in confidence_patterns:
+                    match = re.search(pattern, llm_response, re.IGNORECASE)
+                    if match:
+                        confidence = float(match.group(1))
+                        # Normalize to 0-1 range if needed
+                        if confidence > 1:
+                            confidence /= 100
+                        interpretation['confidence'] = confidence
+                        break
+                
+                # Set success flag
+                interpretation['success'] = interpretation['class'] is not None
             
             # Generic parsing for other tasks
             else:
@@ -692,6 +813,48 @@ class EEGRAGEngine:
                 }
             else:
                 return {'error': "No valid interpretations found"}
+        
+        # For thought-to-text, use a different approach - find the most confident interpretation
+        elif task == "thought_to_text":
+            text_votes = {}
+            confidence_by_text = {}
+            
+            # Count occurrences of each detected text and track confidences
+            for result in token_results:
+                interpretation = result.get('interpretation', {})
+                if interpretation.get('success', False) and 'text' in interpretation:
+                    detected_text = interpretation['text'].lower()  # Normalize to lowercase
+                    text_votes[detected_text] = text_votes.get(detected_text, 0) + 1
+                    
+                    # Track confidence
+                    if 'confidence' in interpretation and interpretation['confidence'] is not None:
+                        if detected_text not in confidence_by_text:
+                            confidence_by_text[detected_text] = []
+                        confidence_by_text[detected_text].append(interpretation['confidence'])
+            
+            # If we have detected texts
+            if text_votes:
+                # Get the text with the most votes
+                majority_text = max(text_votes.items(), key=lambda x: x[1])[0]
+                majority_count = text_votes[majority_text]
+                
+                # Calculate average confidence for the majority text
+                avg_confidence = None
+                if majority_text in confidence_by_text:
+                    confidences = confidence_by_text[majority_text]
+                    if confidences:
+                        avg_confidence = sum(confidences) / len(confidences)
+                
+                return {
+                    'text': majority_text,
+                    'confidence': avg_confidence,
+                    'vote_count': majority_count,
+                    'total_votes': len(token_results),
+                    'vote_percentage': majority_count / len(token_results),
+                    'all_detected_texts': text_votes
+                }
+            else:
+                return {'error': "No valid thought-to-text interpretations found"}
         
         # For other tasks, return the most confident interpretation
         else:

@@ -1,6 +1,6 @@
-# MotorMind: EEG Signal Processing with RAG-LLM
+# MotorMind: EEG Signal Processing with RAG-Gemini
 
-MotorMind is a Python framework for processing EEG signals using a Retrieval-Augmented Generation (RAG) approach with Large Language Models (LLMs). It provides tools for EEG data acquisition, tokenization, vector storage, and inference through LLMs.
+MotorMind is a Python framework for processing EEG signals using a Retrieval-Augmented Generation (RAG) approach with Google's Gemini AI. It provides tools for EEG data acquisition, tokenization, vector storage, and inference through Gemini.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ MotorMind/
 ├── training/             # Training pipelines and utilities
 │   └── data_processing/  # Data processing pipelines
 ├── inference/            # Inference modules
-│   └── llm/              # LLM integration for EEG analysis
+│   └── llm/              # Gemini integration for EEG analysis
 ├── examples/             # Example scripts
 └── utils/                # Utility functions
 ```
@@ -29,7 +29,7 @@ MotorMind/
 2. **Tokenization**: Converts raw EEG data into tokens using feature-based or frequency-based approaches
 3. **Vector Store**: Stores EEG token embeddings in a vector database (Supabase)
 4. **Training**: Processes EEG data and generates tokens for storage
-5. **Inference**: Uses RAG with LLMs to interpret EEG signals
+5. **Inference**: Uses RAG with Google Gemini to interpret EEG signals
 
 ## Installation
 
@@ -55,9 +55,11 @@ Create a `.env` file in the project root with the following variables:
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
 
-# OpenAI API configuration
-OPENAI_API_KEY=your_openai_api_key
+# Gemini API configuration
+GEMINI_API_KEY=your_gemini_api_key
 ```
+
+Alternatively, you can store your Gemini API key in `gemini_api_key.txt` in the project root.
 
 ## Usage Example
 
@@ -78,7 +80,7 @@ The main pipeline consists of:
 1. **Data Loading**: Load EEG data from the default BCI dataset or a specified file
 2. **Tokenization**: Convert EEG signals to tokens using feature or frequency domain approaches
 3. **Vector Storage**: Store tokens and their embeddings in Supabase
-4. **Inference**: Query similar tokens and use LLM to interpret the EEG signals
+4. **Inference**: Query similar tokens and use Google Gemini to interpret the EEG signals
 
 ## Tokenization Approaches
 
