@@ -20,6 +20,7 @@ if parent_dir not in sys.path:
 
 from tokenization.feature_domain.feature_tokenizer import FeatureTokenizer
 from tokenization.frequency_domain.frequency_tokenizer import FrequencyTokenizer
+from tokenization.autoencoder.autoencoder_tokenizer import AutoencoderTokenizer
 from vector_store.database.supabase_vector_store import SupabaseVectorStore
 
 
@@ -325,19 +326,39 @@ class EEGRAGEngine:
         # Initialize prompt generator
         self.prompt_generator = EEGPromptGenerator()
     
-    def _init_tokenizers(self) -> None:
+    def _init_tokenizers(self):
         """Initialize the tokenizers based on the selected type."""
-        params = {
+        # Common parameters for all tokenizers
+        common_params = {
             'fs': self.fs,
             'window_size': self.window_size,
-            'window_shift': self.window_shift,
-            **self.tokenizer_params
+            'window_shift': self.window_shift
         }
         
         if self.tokenizer_type == 'feature':
+            # FeatureTokenizer accepts: fs, window_size, window_shift, frequency_bands
+            params = {**common_params}
+            if 'frequency_bands' in self.tokenizer_params:
+                params['frequency_bands'] = self.tokenizer_params['frequency_bands']
             self.tokenizer = FeatureTokenizer(**params)
+        
         elif self.tokenizer_type == 'frequency':
+            # FrequencyTokenizer accepts: fs, window_size, window_shift, frequency_bands, method, wavelet
+            params = {**common_params}
+            for param in ['frequency_bands', 'method', 'wavelet']:
+                if param in self.tokenizer_params:
+                    params[param] = self.tokenizer_params[param]
             self.tokenizer = FrequencyTokenizer(**params)
+        
+        elif self.tokenizer_type == 'autoencoder':
+            # AutoencoderTokenizer accepts: model_path, input_shape, latent_dim, fs, window_size, 
+            # window_shift, learning_rate, debug
+            params = {**common_params}
+            for param in ['model_path', 'input_shape', 'latent_dim', 'learning_rate', 'debug']:
+                if param in self.tokenizer_params:
+                    params[param] = self.tokenizer_params[param]
+            self.tokenizer = AutoencoderTokenizer(**params)
+        
         else:
             raise ValueError(f"Unsupported tokenizer type: {self.tokenizer_type}")
     
@@ -392,6 +413,16 @@ class EEGRAGEngine:
             # Generate embedding
             embedding = self.tokenizer.token_to_embedding(token)
             token_text = self.tokenizer.decode_token(token)
+            
+            # Pad embedding to match the vector store's expected dimension (512)
+            if embedding.shape[0] != 512:
+                if self.debug:
+                    print(f"Padding embedding from {embedding.shape[0]} to 512 dimensions")
+                
+                # Create padded embedding (zeros in extra dimensions)
+                padded_embedding = np.zeros(512)
+                padded_embedding[:embedding.shape[0]] = embedding
+                embedding = padded_embedding
             
             # Query RAG if enabled
             rag_context = []

@@ -361,14 +361,45 @@ def setup_supabase_client(
     Set up a Supabase client.
     
     Args:
-        supabase_url: Supabase project URL (if None, looks for SUPABASE_URL env var)
-        supabase_key: Supabase API key (if None, looks for SUPABASE_KEY env var)
+        supabase_url: Supabase project URL (if None, looks for SUPABASE_URL env var or file)
+        supabase_key: Supabase API key (if None, looks for SUPABASE_KEY env var or file)
         debug: Whether to print debug information
         
     Returns:
         SupabaseWrapper instance or None if connection failed
     """
     try:
+        # Try to load URL from file if not provided and not in env
+        if not supabase_url and "SUPABASE_URL" not in os.environ:
+            url_file_path = os.path.join(os.getcwd(), "supabase_url.txt")
+            if os.path.exists(url_file_path):
+                with open(url_file_path, "r") as f:
+                    supabase_url = f.read().strip()
+                    if debug:
+                        print(f"Loaded Supabase URL from {url_file_path}")
+        
+        # Try to load key from file if not provided and not in env
+        if not supabase_key and "SUPABASE_KEY" not in os.environ:
+            key_file_path = os.path.join(os.getcwd(), "supabase_key.txt")
+            if os.path.exists(key_file_path):
+                with open(key_file_path, "r") as f:
+                    supabase_key = f.read().strip()
+                    if debug:
+                        print(f"Loaded Supabase key from {key_file_path}")
+        
+        # Load from .env file if python-dotenv is available
+        try:
+            from dotenv import load_dotenv
+            env_file_path = os.path.join(os.getcwd(), ".env")
+            if os.path.exists(env_file_path):
+                load_dotenv(env_file_path)
+                if debug:
+                    print(f"Loaded environment variables from {env_file_path}")
+        except ImportError:
+            if debug:
+                print("python-dotenv not available. Install with: pip install python-dotenv")
+        
+        # Create the client
         client = SupabaseWrapper(supabase_url, supabase_key, debug)
         if client.is_connected():
             return client

@@ -20,6 +20,7 @@ if parent_dir not in sys.path:
 
 from tokenization.feature_domain.feature_tokenizer import FeatureTokenizer
 from tokenization.frequency_domain.frequency_tokenizer import FrequencyTokenizer
+from tokenization.autoencoder.autoencoder_tokenizer import AutoencoderTokenizer
 from vector_store.database.supabase_vector_store import SupabaseVectorStore
 
 
@@ -31,7 +32,7 @@ class EEGTokenizerPipeline:
     
     def __init__(
         self,
-        tokenizer_type: str = 'feature',  # 'feature', 'frequency', or 'both'
+        tokenizer_type: str = 'feature',  # 'feature', 'frequency', 'autoencoder', or 'both'
         tokenizer_params: Optional[Dict[str, Any]] = None,
         vector_store: Optional[SupabaseVectorStore] = None,
         fs: float = 250,
@@ -52,33 +53,67 @@ class EEGTokenizerPipeline:
             debug: Whether to print debug information
         """
         self.tokenizer_type = tokenizer_type
+        self.tokenizer_params = tokenizer_params or {}
         self.vector_store = vector_store
         self.fs = fs
         self.window_size = window_size
         self.window_shift = window_shift
         self.debug = debug
         
-        # Default parameters for tokenizers
-        self.tokenizer_params = tokenizer_params or {}
-        
-        # Initialize tokenizers
-        self._init_tokenizers()
-    
-    def _init_tokenizers(self) -> None:
-        """Initialize the tokenizers based on the selected type."""
-        params = {
+        # Initialize default params with common settings
+        default_params = {
             'fs': self.fs,
             'window_size': self.window_size,
-            'window_shift': self.window_shift,
-            **self.tokenizer_params
+            'window_shift': self.window_shift
         }
         
-        if self.tokenizer_type == 'feature' or self.tokenizer_type == 'both':
-            self.feature_tokenizer = FeatureTokenizer(**params)
+        # Merge default params with user-provided params
+        self.tokenizer_params = {**default_params, **self.tokenizer_params}
         
-        if self.tokenizer_type == 'frequency' or self.tokenizer_type == 'both':
-            self.frequency_tokenizer = FrequencyTokenizer(**params)
-    
+        # Initialize tokenizers
+        self.feature_tokenizer = None
+        self.frequency_tokenizer = None
+        self.autoencoder_tokenizer = None
+        self._init_tokenizers()
+        
+    def _init_tokenizers(self) -> None:
+        """Initialize the tokenizers based on the selected type."""
+        if self.tokenizer_type in ['feature', 'both', 'all']:
+            # Filter parameters for FeatureTokenizer
+            feature_params = {
+                'fs': self.tokenizer_params.get('fs', 250),
+                'window_size': self.tokenizer_params.get('window_size', 1.0),
+                'window_shift': self.tokenizer_params.get('window_shift', 0.1),
+                'frequency_bands': self.tokenizer_params.get('frequency_bands', None)
+            }
+            self.feature_tokenizer = FeatureTokenizer(**feature_params)
+            
+        if self.tokenizer_type in ['frequency', 'both', 'all']:
+            # Filter parameters for FrequencyTokenizer
+            frequency_params = {
+                'fs': self.tokenizer_params.get('fs', 250),
+                'window_size': self.tokenizer_params.get('window_size', 1.0),
+                'window_shift': self.tokenizer_params.get('window_shift', 0.1),
+                'frequency_bands': self.tokenizer_params.get('frequency_bands', None)
+            }
+            self.frequency_tokenizer = FrequencyTokenizer(**frequency_params)
+            
+        if self.tokenizer_type in ['autoencoder', 'all']:
+            # Get autoencoder-specific parameters
+            ae_params = {
+                'fs': self.tokenizer_params.get('fs', 250),
+                'window_size': self.tokenizer_params.get('window_size', 1.0),
+                'window_shift': self.tokenizer_params.get('window_shift', 0.1),
+                'latent_dim': self.tokenizer_params.get('latent_dim', 64),
+                'debug': self.debug
+            }
+            
+            # Add model path if available
+            if 'model_path' in self.tokenizer_params:
+                ae_params['model_path'] = self.tokenizer_params['model_path']
+                
+            self.autoencoder_tokenizer = AutoencoderTokenizer(**ae_params)
+            
     def process_eeg_data(
         self,
         eeg_data: np.ndarray,
@@ -93,110 +128,111 @@ class EEGTokenizerPipeline:
         Args:
             eeg_data: EEG data with shape (channels, samples)
             channel_names: List of channel names
-            recording_id: ID of the recording
-            user_id: ID of the user
+            recording_id: Identifier for the recording
+            user_id: Identifier for the user
             metadata: Additional metadata
             
         Returns:
-            Processing results
+            Dictionary with results
         """
+        if self.debug:
+            print(f"Processing EEG data with shape {eeg_data.shape}")
+            print(f"Using tokenizer type: {self.tokenizer_type}")
+        
         # Default channel names if not provided
         if channel_names is None:
             channel_names = [f"Ch{i}" for i in range(eeg_data.shape[0])]
+            
+        # Default recording ID if not provided
+        if recording_id is None:
+            recording_id = f"recording_{int(time.time())}"
+            
+        # Initialize metadata
+        if metadata is None:
+            metadata = {}
+            
+        # Add basic metadata
+        metadata.update({
+            'recording_id': recording_id,
+            'timestamp': time.time(),
+            'fs': self.fs,
+            'channels': len(channel_names),
+            'duration': eeg_data.shape[1] / self.fs,
+            'tokenizer_type': self.tokenizer_type
+        })
         
-        # Initialize results
+        if user_id:
+            metadata['user_id'] = user_id
+            
+        # Initialize results dictionary
         results = {
+            'recording_id': recording_id,
             'tokenization': {},
-            'embeddings': {},
             'storage': {'success': False, 'count': 0}
         }
         
-        # Tokenize data
-        if self.tokenizer_type == 'feature' or self.tokenizer_type == 'both':
+        # Tokenize the data using selected tokenizer(s)
+        tokens = []
+        
+        if self.tokenizer_type in ['feature', 'both', 'all'] and self.feature_tokenizer:
+            start_time = time.time()
             feature_tokens = self.feature_tokenizer.tokenize(eeg_data, channel_names)
+            tokenization_time = time.time() - start_time
+            
             results['tokenization']['feature'] = {
                 'count': len(feature_tokens),
-                'tokens': feature_tokens
+                'time': tokenization_time
             }
-        
-        if self.tokenizer_type == 'frequency' or self.tokenizer_type == 'both':
+            
+            if self.debug:
+                print(f"Generated {len(feature_tokens)} feature tokens in {tokenization_time:.2f} seconds")
+                
+            # Add tokens with tokenizer type
+            for token in feature_tokens:
+                token['tokenizer_type'] = 'feature'
+                tokens.append(token)
+                
+        if self.tokenizer_type in ['frequency', 'both', 'all'] and self.frequency_tokenizer:
+            start_time = time.time()
             frequency_tokens = self.frequency_tokenizer.tokenize(eeg_data, channel_names)
+            tokenization_time = time.time() - start_time
+            
             results['tokenization']['frequency'] = {
                 'count': len(frequency_tokens),
-                'tokens': frequency_tokens
+                'time': tokenization_time
             }
-        
-        # Generate embeddings
-        if self.tokenizer_type == 'feature' or self.tokenizer_type == 'both':
-            feature_embeddings = []
-            feature_token_texts = []
             
-            for token in feature_tokens:
-                embedding = self.feature_tokenizer.token_to_embedding(token)
-                token_text = self.feature_tokenizer.decode_token(token)
+            if self.debug:
+                print(f"Generated {len(frequency_tokens)} frequency tokens in {tokenization_time:.2f} seconds")
                 
-                feature_embeddings.append(embedding)
-                feature_token_texts.append(token_text)
-            
-            results['embeddings']['feature'] = {
-                'count': len(feature_embeddings),
-                'embeddings': feature_embeddings,
-                'token_texts': feature_token_texts
-            }
-        
-        if self.tokenizer_type == 'frequency' or self.tokenizer_type == 'both':
-            frequency_embeddings = []
-            frequency_token_texts = []
-            
+            # Add tokens with tokenizer type
             for token in frequency_tokens:
-                embedding = self.frequency_tokenizer.token_to_embedding(token)
-                token_text = self.frequency_tokenizer.decode_token(token)
+                token['tokenizer_type'] = 'frequency'
+                tokens.append(token)
                 
-                frequency_embeddings.append(embedding)
-                frequency_token_texts.append(token_text)
+        if self.tokenizer_type in ['autoencoder', 'all'] and self.autoencoder_tokenizer:
+            start_time = time.time()
+            autoencoder_tokens = self.autoencoder_tokenizer.tokenize(eeg_data, channel_names)
+            tokenization_time = time.time() - start_time
             
-            results['embeddings']['frequency'] = {
-                'count': len(frequency_embeddings),
-                'embeddings': frequency_embeddings,
-                'token_texts': frequency_token_texts
+            results['tokenization']['autoencoder'] = {
+                'count': len(autoencoder_tokens),
+                'time': tokenization_time
             }
+            
+            if self.debug:
+                print(f"Generated {len(autoencoder_tokens)} autoencoder tokens in {tokenization_time:.2f} seconds")
+                
+            # Add tokens with tokenizer type
+            for token in autoencoder_tokens:
+                token['tokenizer_type'] = 'autoencoder'
+                tokens.append(token)
         
-        # Store embeddings if vector store is provided
-        if self.vector_store is not None:
-            if self.tokenizer_type == 'feature' or self.tokenizer_type == 'both':
-                feature_storage = self.vector_store.store_batch_embeddings(
-                    embeddings=feature_embeddings,
-                    token_data_list=feature_tokens,
-                    token_text_list=feature_token_texts,
-                    metadata_list=[{'tokenizer_type': 'feature', **(metadata or {})} for _ in feature_tokens],
-                    recording_id=recording_id,
-                    user_id=user_id
-                )
-                results['storage']['feature'] = feature_storage
+        # Store tokenized data if vector store is provided
+        if self.vector_store and tokens:
+            storage_results = self._store_tokens(tokens, recording_id, metadata)
+            results['storage'] = storage_results
             
-            if self.tokenizer_type == 'frequency' or self.tokenizer_type == 'both':
-                frequency_storage = self.vector_store.store_batch_embeddings(
-                    embeddings=frequency_embeddings,
-                    token_data_list=frequency_tokens,
-                    token_text_list=frequency_token_texts,
-                    metadata_list=[{'tokenizer_type': 'frequency', **(metadata or {})} for _ in frequency_tokens],
-                    recording_id=recording_id,
-                    user_id=user_id
-                )
-                results['storage']['frequency'] = frequency_storage
-            
-            # Calculate total success
-            results['storage']['success'] = all([
-                results['storage'].get(t, {}).get('success', False) 
-                for t in results['storage'] if t != 'success' and t != 'count'
-            ])
-            
-            # Calculate total count
-            results['storage']['count'] = sum([
-                results['storage'].get(t, {}).get('count', 0) 
-                for t in results['storage'] if t != 'success' and t != 'count'
-            ])
-        
         return results
     
     def process_eeg_file(
@@ -419,3 +455,123 @@ class EEGTokenizerPipeline:
                     print(f"Exception processing file {file_path}: {e}")
         
         return results 
+
+    def _store_tokens(
+        self, 
+        tokens: List[Dict[str, Any]], 
+        recording_id: str, 
+        metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Store tokens in the vector database.
+        
+        Args:
+            tokens: List of tokens to store
+            recording_id: Identifier for the recording
+            metadata: Additional metadata
+            
+        Returns:
+            Storage results
+        """
+        if not self.vector_store:
+            return {'success': False, 'count': 0, 'error': 'Vector store not provided'}
+        
+        # Initialize results
+        results = {
+            'success': False,
+            'count': 0,
+            'tokenizer_results': {}
+        }
+        
+        # Group tokens by tokenizer type
+        tokenizer_types = {}
+        for token in tokens:
+            tokenizer_type = token.get('tokenizer_type', 'unknown')
+            if tokenizer_type not in tokenizer_types:
+                tokenizer_types[tokenizer_type] = []
+            tokenizer_types[tokenizer_type].append(token)
+        
+        # Target embedding dimension (from the vector_store)
+        target_dim = getattr(self.vector_store, 'embedding_dimension', 512)
+        
+        # Store tokens by type
+        total_stored = 0
+        successful_types = []
+        
+        for tokenizer_type, type_tokens in tokenizer_types.items():
+            embeddings = []
+            token_texts = []
+            
+            # Get the appropriate tokenizer
+            tokenizer = None
+            if tokenizer_type == 'feature':
+                tokenizer = self.feature_tokenizer
+            elif tokenizer_type == 'frequency':
+                tokenizer = self.frequency_tokenizer
+            elif tokenizer_type == 'autoencoder':
+                tokenizer = self.autoencoder_tokenizer
+            
+            if not tokenizer:
+                results['tokenizer_results'][tokenizer_type] = {
+                    'success': False,
+                    'count': 0,
+                    'error': f'Tokenizer not available for type {tokenizer_type}'
+                }
+                continue
+            
+            # Generate embeddings and token texts
+            for token in type_tokens:
+                embedding = tokenizer.token_to_embedding(token)
+                
+                # Pad or truncate embedding to match the target dimension
+                if embedding.shape[0] < target_dim:
+                    # Pad with zeros if smaller than target
+                    padded_embedding = np.zeros(target_dim)
+                    padded_embedding[:embedding.shape[0]] = embedding
+                    embedding = padded_embedding
+                elif embedding.shape[0] > target_dim:
+                    # Truncate if larger than target
+                    embedding = embedding[:target_dim]
+                
+                token_text = tokenizer.decode_token(token)
+                
+                embeddings.append(embedding)
+                token_texts.append(token_text)
+                
+                if self.debug and token == type_tokens[0]:
+                    print(f"Original embedding dimension: {tokenizer.token_to_embedding(token).shape[0]}")
+                    print(f"Padded embedding dimension: {embedding.shape[0]}")
+            
+            # Update metadata for each token
+            token_metadata = [
+                {**metadata, 'tokenizer_type': tokenizer_type} for _ in type_tokens
+            ]
+            
+            # Store in vector database
+            storage_result = self.vector_store.store_batch_embeddings(
+                embeddings=embeddings,
+                token_data_list=type_tokens,
+                token_text_list=token_texts,
+                metadata_list=token_metadata,
+                recording_id=recording_id
+            )
+            
+            # Update results
+            results['tokenizer_results'][tokenizer_type] = storage_result
+            
+            if storage_result.get('success', False):
+                successful_types.append(tokenizer_type)
+                total_stored += storage_result.get('count', 0)
+        
+        # Update summary results
+        results['success'] = len(successful_types) > 0
+        results['count'] = total_stored
+        
+        if self.debug:
+            print(f"Stored {total_stored} tokens in the vector database")
+            for tokenizer_type, type_result in results['tokenizer_results'].items():
+                success = type_result.get('success', False)
+                count = type_result.get('count', 0)
+                print(f"  {tokenizer_type}: {'✓' if success else '✗'} {count} tokens")
+        
+        return results

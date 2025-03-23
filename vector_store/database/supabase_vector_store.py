@@ -175,56 +175,107 @@ class SupabaseVectorStore:
         self,
         query_embedding: np.ndarray,
         limit: int = 5,
-        similarity_threshold: float = 0.7,
+        similarity_threshold: float = 0.6,
         filter_criteria: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Query for vectors similar to the provided embedding.
+        Query for similar embeddings using cosine similarity.
         
         Args:
             query_embedding: Query embedding vector
             limit: Maximum number of results to return
-            similarity_threshold: Minimum similarity score (0-1)
-            filter_criteria: Additional filter criteria for the query
+            similarity_threshold: Minimum similarity score threshold
+            filter_criteria: Additional filter criteria
             
         Returns:
-            List of matching embeddings with similarity scores
+            Query results
         """
         if not self.supabase or not hasattr(self.supabase, 'client'):
-            return {"error": "Supabase client not initialized", "success": False, "results": []}
+            return {"error": "Supabase client not initialized", "success": False}
         
         try:
             # Convert embedding to list for JSON serialization
-            embedding_list = query_embedding.tolist()
+            if isinstance(query_embedding, np.ndarray):
+                # Sanitize the embedding: replace NaN/Inf with 0
+                query_embedding = np.nan_to_num(query_embedding, nan=0.0, posinf=0.0, neginf=0.0)
+                embedding_list = query_embedding.tolist()
+            else:
+                embedding_list = query_embedding
             
-            # Build the query
-            query = self.supabase.client.rpc(
-                "match_embeddings",
-                {
+            # Debug output
+            if self.debug:
+                print(f"Querying for similar embeddings (dim={len(embedding_list)}, threshold={similarity_threshold})")
+            
+            # Call the match_embeddings function
+            try:
+                payload = {
                     "query_embedding": embedding_list,
                     "match_threshold": similarity_threshold,
                     "match_count": limit,
                     "table_name": self.table_name
                 }
-            )
-            
-            # Apply additional filters if provided
-            if filter_criteria:
-                for key, value in filter_criteria.items():
-                    query = query.eq(key, value)
-            
-            # Execute the query
-            response = query.execute()
-            
-            return {
-                "success": True,
-                "results": response.data
-            }
-            
+                
+                response = self.supabase.client.rpc(
+                    "match_embeddings",
+                    payload
+                ).execute()
+                
+                results = response.data if response.data else []
+                
+                if self.debug:
+                    print(f"Found {len(results)} similar tokens")
+                
+                # Apply additional filters if provided
+                if filter_criteria and results:
+                    filtered_results = []
+                    for result in results:
+                        match = True
+                        for key, value in filter_criteria.items():
+                            if key not in result or result[key] != value:
+                                match = False
+                                break
+                        if match:
+                            filtered_results.append(result)
+                    results = filtered_results
+                
+                return {
+                    "success": True,
+                    "results": results
+                }
+                
+            except Exception as match_error:
+                if self.debug:
+                    print(f"Error calling match_embeddings: {match_error}")
+                
+                # Fall through to fallback method
+                raise match_error
+                
         except Exception as e:
             if self.debug:
-                print(f"Error querying similar embeddings: {e}")
-            return {"error": str(e), "success": False, "results": []}
+                print(f"Falling back to simple retrieval: {e}")
+            
+            # Fallback to a simpler approach - find recent tokens without vector search
+            try:
+                # Just get some recent tokens as fallback
+                fallback_response = self.supabase.client.table(self.table_name).select("*").limit(limit).execute()
+                
+                if self.debug:
+                    print(f"Fallback retrieved {len(fallback_response.data if fallback_response.data else [])} tokens")
+                
+                return {
+                    "success": True,
+                    "results": fallback_response.data if fallback_response.data else [],
+                    "fallback": True
+                }
+            except Exception as fallback_error:
+                if self.debug:
+                    print(f"Fallback error: {fallback_error}")
+                
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "results": []
+                }
     
     def delete_embeddings(
         self,

@@ -26,13 +26,14 @@ if parent_dir not in sys.path:
 from eeg_acquisition.data_collection.eeg_loader import load_eeg_data, create_dummy_eeg_data
 from tokenization.feature_domain.feature_tokenizer import FeatureTokenizer
 from tokenization.frequency_domain.frequency_tokenizer import FrequencyTokenizer
+from tokenization.autoencoder.autoencoder_tokenizer import AutoencoderTokenizer
 from vector_store.database.supabase_vector_store import SupabaseVectorStore
 from training.data_processing.eeg_tokenizer_pipeline import EEGTokenizerPipeline
 from inference.llm.eeg_rag_engine import EEGRAGEngine
 from inference.llm.gemini_client import GeminiClient
 
 # Import Supabase client
-from vector_store.database.supabase_client import setup_supabase_client, SupabaseWrapper
+from vector_store.database.supabase_client import setup_supabase_client as init_supabase
 
 
 def setup_supabase_client(url=None, key=None):
@@ -47,7 +48,7 @@ def setup_supabase_client(url=None, key=None):
         Initialized SupabaseWrapper
     """
     # Use the helper function from supabase_client.py
-    supabase = setup_supabase_client(url, key, debug=True)
+    supabase = init_supabase(url, key, debug=True)
     
     if supabase is None:
         print("Error: Could not connect to Supabase")
@@ -81,169 +82,228 @@ def setup_gemini_client(api_key=None, model_name="gemini-pro"):
         return None
 
 
-def demo_training_phase(
-    eeg_data, 
-    channel_names, 
-    fs, 
-    supabase_client, 
-    tokenizer_type="both",
-    debug=False
-):
+def demo_training_phase(eeg_data, channel_names, fs, supabase_client, tokenizer_type="both", autoencoder_model_path=None, debug=False):
     """
-    Demonstrate the training phase: tokenization and vector store population.
+    Demonstrate the training phase of the MotorMind pipeline.
     
     Args:
         eeg_data: EEG data with shape (channels, samples)
         channel_names: List of channel names
         fs: Sampling frequency in Hz
-        supabase_client: Initialized Supabase client
-        tokenizer_type: Type of tokenizer to use ('feature', 'frequency', or 'both')
-        debug: Whether to print debug information
+        supabase_client: Supabase client instance
+        tokenizer_type: Type of tokenizer to use ("feature", "frequency", "autoencoder", "both", or "all")
+        autoencoder_model_path: Path to pre-trained autoencoder model (for "autoencoder" tokenizer type)
+        debug: Enable debug output
         
     Returns:
-        Training results
+        Dictionary with training results
     """
-    print("\n=== TRAINING PHASE ===")
-    print(f"Tokenizing EEG data using {tokenizer_type} tokenizer...")
+    print("\n===== TRAINING PHASE =====")
+    print(f"Tokenizing EEG data with {tokenizer_type} tokenizer...")
     
-    # Initialize vector store
-    vector_store = SupabaseVectorStore(
-        supabase_client=supabase_client,
-        table_name="eeg_embeddings",
-        debug=debug
-    )
+    start_time = time.time()
     
-    # Initialize tokenizer pipeline
+    # Create vector store with debug enabled
+    vector_store = SupabaseVectorStore(supabase_client, debug=True)
+    
+    # Set up tokenizer parameters
+    tokenizer_params = {
+        "fs": fs,
+        "debug": debug
+    }
+    
+    # Add autoencoder model path if provided
+    if autoencoder_model_path:
+        tokenizer_params["model_path"] = autoencoder_model_path
+    
+    # Set up tokenizers to use
+    tokenizers_to_use = []
+    if tokenizer_type == "feature" or tokenizer_type == "both" or tokenizer_type == "all":
+        tokenizers_to_use.append("feature")
+    if tokenizer_type == "frequency" or tokenizer_type == "both" or tokenizer_type == "all":
+        tokenizers_to_use.append("frequency")
+    if tokenizer_type == "autoencoder" or tokenizer_type == "all":
+        if autoencoder_model_path:
+            tokenizers_to_use.append("autoencoder")
+        else:
+            print("WARNING: Autoencoder tokenizer requested but no model path provided. Skipping autoencoder tokenization.")
+    
+    # Create tokenizer pipeline with debug enabled
     pipeline = EEGTokenizerPipeline(
         tokenizer_type=tokenizer_type,
+        tokenizer_params=tokenizer_params,
         vector_store=vector_store,
-        fs=fs,
-        debug=debug
+        debug=True  # Enable debug to get more information
     )
     
-    # Process the data
-    start_time = time.time()
+    # Process EEG data
     results = pipeline.process_eeg_data(
         eeg_data=eeg_data,
-        channel_names=channel_names,
-        recording_id="demo_recording",
-        metadata={"purpose": "demo", "recording_type": "motor_imagery"}
+        channel_names=channel_names
     )
-    processing_time = time.time() - start_time
+    
+    training_time = time.time() - start_time
     
     # Print results
-    print(f"Tokenization completed in {processing_time:.2f} seconds")
+    print("\nTokenization Results:")
+    for tokenizer in results["tokenization"]:
+        print(f"  {tokenizer}: {results['tokenization'][tokenizer]['count']} tokens generated")
     
-    if tokenizer_type == 'both':
-        feature_count = results['tokenization'].get('feature', {}).get('count', 0)
-        frequency_count = results['tokenization'].get('frequency', {}).get('count', 0)
-        print(f"Generated {feature_count} feature tokens and {frequency_count} frequency tokens")
-    else:
-        token_count = results['tokenization'].get(tokenizer_type, {}).get('count', 0)
-        print(f"Generated {token_count} {tokenizer_type} tokens")
+    print(f"\nStorage Results:")
+    print(f"  Success: {results['storage']['success']}")
+    print(f"  Tokens stored: {results['storage']['count']}")
     
-    storage_success = results['storage'].get('success', False)
-    storage_count = results['storage'].get('count', 0)
+    # Print detailed storage errors if available
+    if not results['storage']['success'] and 'tokenizer_results' in results['storage']:
+        print("\nStorage Error Details:")
+        for tokenizer_type, result in results['storage']['tokenizer_results'].items():
+            if not result.get('success', False):
+                print(f"  {tokenizer_type}: {result.get('error', 'Unknown error')}")
     
-    if storage_success:
-        print(f"Successfully stored {storage_count} token embeddings in the vector database")
-    else:
-        print("Failed to store token embeddings in the vector database")
+    print(f"\nTraining phase completed in {training_time:.2f} seconds")
     
     return results
 
 
-def demo_inference_phase(
-    eeg_data, 
-    channel_names, 
-    fs, 
-    supabase_client, 
-    gemini_client,
-    tokenizer_type="frequency",
-    task="motor_imagery_classification",
-    use_rag=True,
-    use_tree_of_thought=True,
-    debug=False
-):
+def demo_inference_phase(eeg_data, channel_names, fs, supabase_client, gemini_client, 
+                        tokenizer_type="frequency", autoencoder_model_path=None,
+                        task="motor_imagery_classification", use_rag=True, debug=False):
     """
-    Demonstrate the inference phase: tokenization, RAG, and LLM analysis.
+    Demonstrate the inference phase of the MotorMind pipeline.
     
     Args:
         eeg_data: EEG data with shape (channels, samples)
         channel_names: List of channel names
         fs: Sampling frequency in Hz
-        supabase_client: Initialized Supabase client
-        gemini_client: Initialized Gemini client
-        tokenizer_type: Type of tokenizer to use ('feature' or 'frequency')
-        task: Analysis task (motor_imagery_classification, thought_to_text, etc.)
+        supabase_client: Supabase client instance
+        gemini_client: Gemini client instance
+        tokenizer_type: Type of tokenizer to use ("feature", "frequency", or "autoencoder")
+        autoencoder_model_path: Path to pre-trained autoencoder model (for "autoencoder" tokenizer type)
+        task: Analysis task to perform
         use_rag: Whether to use RAG
-        use_tree_of_thought: Whether to use tree-of-thought reasoning
-        debug: Whether to print debug information
+        debug: Enable debug output
         
     Returns:
-        Inference results
+        Dictionary with inference results
     """
-    print("\n=== INFERENCE PHASE ===")
-    print(f"Analyzing new EEG data using {tokenizer_type} tokenizer for {task} task...")
+    print("\n===== INFERENCE PHASE =====")
+    print(f"Analyzing EEG data with {tokenizer_type} tokenizer...")
     
-    if use_rag:
-        print("RAG is enabled: Will use similar examples from the vector database")
-    else:
-        print("RAG is disabled: Will use LLM analysis only")
-    
-    if use_tree_of_thought:
-        print("Tree-of-thought reasoning is enabled")
-    
-    # Initialize vector store
-    vector_store = SupabaseVectorStore(
-        supabase_client=supabase_client,
-        table_name="eeg_embeddings",
-        debug=debug
-    )
-    
-    # Initialize inference engine
-    engine = EEGRAGEngine(
-        gemini_client=gemini_client,
-        vector_store=vector_store if use_rag else None,
-        tokenizer_type=tokenizer_type,
-        fs=fs,
-        debug=debug
-    )
-    
-    # Process the data
     start_time = time.time()
-    results = engine.process_eeg_data(
-        eeg_data=eeg_data,
-        channel_names=channel_names,
-        task=task,
-        use_rag=use_rag,
-        use_tree_of_thought=use_tree_of_thought
+    
+    # Create vector store if using RAG
+    vector_store = SupabaseVectorStore(supabase_client) if use_rag else None
+    
+    # Set up tokenizer parameters
+    tokenizer_params = {
+        "fs": fs,
+        "debug": debug
+    }
+    
+    # Add model_path only for autoencoder tokenizer
+    if tokenizer_type == "autoencoder" and autoencoder_model_path:
+        tokenizer_params["model_path"] = autoencoder_model_path
+    
+    # Create RAG engine
+    rag_engine = EEGRAGEngine(
+        gemini_client=gemini_client,
+        tokenizer_type=tokenizer_type,
+        tokenizer_params=tokenizer_params,
+        vector_store=vector_store,
+        debug=debug
     )
-    processing_time = time.time() - start_time
+    
+    # Process query segment from EEG data
+    # For demo purposes, use a segment from the middle of the data
+    segment_duration = 2.0  # seconds
+    segment_samples = int(segment_duration * fs)
+    
+    # Ensure we don't exceed the data length
+    max_start = max(0, eeg_data.shape[1] - segment_samples - 1)
+    start_idx = max_start // 2  # Take from the middle
+    
+    # Extract segment
+    eeg_segment = eeg_data[:, start_idx:start_idx + segment_samples]
+    
+    # Run inference
+    results = rag_engine.process_eeg_data(
+        eeg_data=eeg_segment,
+        channel_names=channel_names,
+        task=task
+    )
+    
+    inference_time = time.time() - start_time
     
     # Print results
-    print(f"Inference completed in {processing_time:.2f} seconds")
+    print("\nInference Results:")
+    print(f"  Task: {task}")
     
-    # Extract and print the interpretation
-    interpretation = results.get('interpretation', {})
-    if 'error' in interpretation:
-        print(f"Error in interpretation: {interpretation['error']}")
-    else:
-        print("\nInterpretation Results:")
-        if task == "thought_to_text":
-            if 'text' in interpretation:
-                print(f"Detected thought: {interpretation['text']}")
-            if 'confidence' in interpretation and interpretation['confidence'] is not None:
-                print(f"Confidence: {interpretation['confidence']*100:.1f}%")
-        elif 'class' in interpretation:
-            print(f"Classification: {interpretation['class']}")
-            if 'confidence' in interpretation and interpretation['confidence'] is not None:
-                print(f"Confidence: {interpretation['confidence']*100:.1f}%")
-            if 'vote_count' in interpretation:
-                print(f"Vote count: {interpretation['vote_count']}/{interpretation['total_votes']} "
-                    f"({interpretation['vote_percentage']*100:.1f}%)")
+    # Map the new result structure to our expected output
+    inference_result = {
+        'prediction': None,
+        'confidence': None,
+        'text': None,
+        'evidence': []
+    }
     
-    return results
+    # Extract interpretation from the new structure
+    if 'interpretation' in results:
+        interpretation = results['interpretation']
+        
+        if task == "motor_imagery_classification":
+            inference_result['prediction'] = interpretation.get('class')
+            inference_result['confidence'] = interpretation.get('confidence')
+        elif task == "thought_to_text":
+            inference_result['text'] = interpretation.get('text')
+            inference_result['confidence'] = interpretation.get('confidence')
+        elif task == "abnormality_detection":
+            inference_result['abnormality_detected'] = interpretation.get('class') == 'abnormal'
+            inference_result['abnormality_type'] = interpretation.get('abnormality_type', 'Unknown')
+            inference_result['severity'] = interpretation.get('severity', 'Unknown')
+            inference_result['confidence'] = interpretation.get('confidence')
+    
+    # Extract supporting evidence if RAG was used
+    if use_rag and 'rag' in results and 'similar_examples' in results['rag']:
+        inference_result['evidence'] = [
+            {'text': example.get('token_text', ''), 'score': example.get('similarity', 0)}
+            for example in results['rag']['similar_examples']
+        ]
+    
+    # Print formatted results based on the task
+    if task == "motor_imagery_classification":
+        print(f"  Predicted class: {inference_result['prediction']}")
+        confidence = inference_result['confidence']
+        if confidence is not None:
+            print(f"  Confidence: {confidence:.2f}")
+        else:
+            print("  Confidence: N/A")
+    elif task == "thought_to_text":
+        print(f"  Decoded thought: {inference_result['text']}")
+        confidence = inference_result['confidence']
+        if confidence is not None:
+            print(f"  Confidence: {confidence:.2f}")
+        else:
+            print("  Confidence: N/A")
+    elif task == "abnormality_detection":
+        print(f"  Abnormality detected: {inference_result['abnormality_detected']}")
+        if inference_result['abnormality_detected']:
+            print(f"  Abnormality type: {inference_result['abnormality_type']}")
+            print(f"  Severity: {inference_result['severity']}")
+        confidence = inference_result['confidence']
+        if confidence is not None:
+            print(f"  Confidence: {confidence:.2f}")
+        else:
+            print("  Confidence: N/A")
+    
+    # Print supporting evidence if RAG was used
+    if use_rag and inference_result['evidence']:
+        print("\nSupporting Evidence:")
+        for e in inference_result['evidence'][:3]:  # Show top 3 pieces of evidence
+            print(f"  - {e['text']} (Score: {e['score']:.2f})")
+    
+    print(f"\nInference phase completed in {inference_time:.2f} seconds")
+    
+    return inference_result
 
 
 def main():
@@ -261,16 +321,16 @@ def main():
     parser.add_argument("--gemini-api-key", help="Gemini API key")
     parser.add_argument("--gemini-model", default="gemini-pro", help="Gemini model name")
     
-    parser.add_argument("--tokenizer", choices=["feature", "frequency", "both"], default="both",
+    parser.add_argument("--tokenizer", choices=["feature", "frequency", "autoencoder", "both", "all"], default="both",
                         help="Tokenizer type to use for training")
-    parser.add_argument("--inference-tokenizer", choices=["feature", "frequency"], default="frequency",
+    parser.add_argument("--inference-tokenizer", choices=["feature", "frequency", "autoencoder"], default="frequency",
                         help="Tokenizer type to use for inference")
+    parser.add_argument("--autoencoder-model-path", help="Path to pre-trained autoencoder model")
     
     parser.add_argument("--task", choices=["motor_imagery_classification", "thought_to_text", "abnormality_detection"], 
                         default="motor_imagery_classification", help="Analysis task to perform")
     
     parser.add_argument("--disable-rag", action="store_true", help="Disable RAG")
-    parser.add_argument("--disable-tot", action="store_true", help="Disable tree-of-thought reasoning")
     
     parser.add_argument("--output", help="Path to output file for results")
     parser.add_argument("--debug", action="store_true", help="Enable debug output")
@@ -279,6 +339,11 @@ def main():
     parser.add_argument("--skip-inference", action="store_true", help="Skip inference phase")
     
     args = parser.parse_args()
+    
+    # Check for autoencoder tokenizer without model path
+    if (args.tokenizer == "autoencoder" or args.tokenizer == "all" or args.inference_tokenizer == "autoencoder") and not args.autoencoder_model_path:
+        print("WARNING: Autoencoder tokenizer requested but no model path provided.")
+        print("You can train an autoencoder model using examples/train_autoencoder.py")
     
     # Load or generate EEG data
     if args.eeg_file:
@@ -322,6 +387,7 @@ def main():
             fs=fs,
             supabase_client=supabase_client,
             tokenizer_type=args.tokenizer,
+            autoencoder_model_path=args.autoencoder_model_path,
             debug=args.debug
         )
     
@@ -334,9 +400,9 @@ def main():
             supabase_client=supabase_client,
             gemini_client=gemini_client,
             tokenizer_type=args.inference_tokenizer,
+            autoencoder_model_path=args.autoencoder_model_path,
             task=args.task,
             use_rag=not args.disable_rag,
-            use_tree_of_thought=not args.disable_tot,
             debug=args.debug
         )
     
